@@ -1,15 +1,16 @@
 use std::{
     fs::File,
-    io::{BufRead, BufReader, Result},
+    io::{BufRead, BufReader, Result}, path::PathBuf,
 };
 use clap::Parser;
 use serde::{Serialize, Deserialize};
+use chrono::{DateTime};
 
 #[derive(Parser)]
 #[command(name="Loggaliza", version, about("Server logs file analyzer"), long_about = None)]
 struct Opts {
     #[arg(short = 'i', long)]
-    input_file: String,
+    input_file: PathBuf,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -45,8 +46,13 @@ struct LogEntry {
 
 fn main() -> Result<()> {
     let args = Opts::parse();
+
+    let file_exists = args.input_file.try_exists()?;
+    if !file_exists {
+        panic!("File does not exist")
+    }
     // let file_path: PathBuf = PathBuf::from(args.input_file);
-    let file = File::open(args.input_file)?; 
+    let file = File::open(args.input_file)?;
     let reader = BufReader::new(file);
 
     for line in reader.lines() {
