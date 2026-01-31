@@ -122,14 +122,14 @@ impl Display for LogMethod {
 
 #[derive(Debug, Clone)]
 pub struct LogEntry {
-    timestamp: Option<String>,
-    level: Option<LogLevel>,
-    ip_address: Option<IpAddr>,
-    method: Option<LogMethod>,
-    endpoint: Option<String>,
-    status_code: Option<u16>,
-    response_time: Option<f64>,
-    message: Option<String>,
+    pub timestamp: Option<String>,
+    pub level: Option<LogLevel>,
+    pub ip_address: Option<IpAddr>,
+    pub method: Option<LogMethod>,
+    pub endpoint: Option<String>,
+    pub status_code: Option<u16>,
+    pub response_time: Option<f64>,
+    pub message: Option<String>,
 }
 
 impl LogEntry {
@@ -141,13 +141,13 @@ impl LogEntry {
             // .map(|m| m.parse::<NaiveDateTime>().unwrap()),
             level: LEVEL_PATTERN
                 .find(log_line)
-                .map(|m| m.as_str().parse::<LogLevel>().unwrap()),
+                .and_then(|m| m.as_str().trim_matches(&['[', ']'][..]).parse::<LogLevel>().ok()),
             ip_address: IP_PATTERN
                 .find(log_line)
-                .map(|m| m.as_str().parse::<IpAddr>().unwrap()),
+                .and_then(|m| m.as_str().parse::<IpAddr>().ok()),
             method: METHOD_PATTERN
                 .find(log_line)
-                .map(|m| m.as_str().parse::<LogMethod>().unwrap()),
+                .and_then(|m| m.as_str().parse::<LogMethod>().ok()),
             endpoint: ENDPOINT_PATTERN
                 .captures(log_line)
                 .and_then(|c| c.get(1).map(|m| m.as_str().to_string())),
@@ -196,11 +196,12 @@ impl Logs {
         log_level: &str,
     ) -> Result<impl Iterator<Item = &LogEntry>, AnalyzerError> {
         Ok(self.entries.iter().filter(|&e| {
-            if let Some(level) = e.level.as_ref() {
-                level.to_string() == log_level.parse::<LogLevel>().unwrap().to_string()
-            } else {
-                false
-            }
+            e.level
+                .as_ref()
+                .map(|level| {
+                    level.to_string() == log_level.parse::<LogLevel>().unwrap().to_string()
+                })
+                .unwrap_or(false)
         }))
     }
 
@@ -209,19 +210,20 @@ impl Logs {
         start: &str,
         end: &str,
     ) -> Result<impl Iterator<Item = &LogEntry>, AnalyzerError> {
-        let start = NaiveDateTime::parse_from_str(start, "%Y-%m-%d")?;
-        let end = NaiveDateTime::parse_from_str(end, "%Y-%m-%d")?;
+        let start = NaiveDate::parse_from_str(start, "%Y-%m-%d")?;
+        let end = NaiveDate::parse_from_str(end, "%Y-%m-%d")?;
         Ok(self.entries.iter().filter(move |&e| {
-            if let Some(timestamp) = e.timestamp.as_ref() {
-                let parsed_timestamp =
-                    NaiveDateTime::parse_from_str(timestamp, "%Y-%m-%d %H:%M:%S%.3f");
-                match parsed_timestamp {
-                    Ok(dt) => dt.ge(&start) && dt.le(&end),
-                    Err(_) => false,
-                }
-            } else {
-                false
-            }
+            e.timestamp
+                .as_ref()
+                .map(|timestamp| {
+                    let date_split = timestamp.split_whitespace().nth(0).unwrap_or("");
+                    let parsed_date = NaiveDate::parse_from_str(date_split, "%Y-%m-%d");
+                    match parsed_date {
+                        Ok(dt) => dt.ge(&start) && dt.le(&end),
+                        Err(_) => false,
+                    }
+                })
+                .unwrap_or(false)
         }))
     }
 
@@ -229,8 +231,7 @@ impl Logs {
         &self,
         pattern: &str,
     ) -> Result<impl Iterator<Item = &LogEntry>, AnalyzerError> {
-        let endpoint_pattern =
-            Regex::new(&format!(r"\b{}\b", regex::escape(pattern)))?;
+        let endpoint_pattern = Regex::new(&regex::escape(pattern))?;
         Ok(self.entries.iter().filter(move |&e| {
             e.endpoint
                 .as_ref()
