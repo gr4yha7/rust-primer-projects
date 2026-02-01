@@ -3,12 +3,7 @@ use chrono::{NaiveDate, NaiveDateTime};
 use lazy_static::lazy_static;
 use regex::Regex;
 use std::{
-    fmt::{self, Display, Formatter},
-    fs::File,
-    io::{BufRead, BufReader},
-    net::IpAddr,
-    path::PathBuf,
-    str::FromStr,
+    collections::HashMap, fmt::{self, Display, Formatter}, fs::File, io::{BufRead, BufReader}, net::IpAddr, path::PathBuf, str::FromStr
 };
 use thiserror::Error;
 
@@ -119,7 +114,39 @@ impl Display for LogMethod {
     }
 }
 
+impl Display for ParseWarning {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Warning: Could not parse line {}: {} - {}",
+            self.line_number, self.error, self.line_content
+        )
+    }
+}
 #[derive(Debug, Clone)]
+pub struct ParseWarning {
+    pub line_number: usize,
+    pub line_content: String,
+    pub error: String,
+}
+
+#[derive(Debug)]
+pub struct ParseResult {
+    pub warnings: Vec<ParseWarning>,
+    pub entries_parsed: usize,
+}
+
+impl ParseResult {
+    pub fn has_warnings(&self) -> bool {
+        !self.warnings.is_empty()
+    }
+
+    pub fn warning_count(&self) -> usize {
+        self.warnings.len()
+    }
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct LogEntry {
     pub timestamp: Option<String>,
     pub level: Option<LogLevel>,
@@ -177,6 +204,7 @@ impl LogEntry {
     }
 }
 
+#[derive(Debug)]
 pub struct Logs {
     pub entries: Vec<LogEntry>,
 }
@@ -278,34 +306,79 @@ impl Logs {
     }
 }
 
-impl Display for ParseWarning {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "Warning: Could not parse line {}: {} - {}",
-            self.line_number, self.error, self.line_content
-        )
-    }
-}
-#[derive(Debug, Clone)]
-pub struct ParseWarning {
-    pub line_number: usize,
-    pub line_content: String,
-    pub error: String,
-}
-
 #[derive(Debug)]
-pub struct ParseResult {
-    pub warnings: Vec<ParseWarning>,
-    pub entries_parsed: usize,
+pub struct LogStats {
+    pub total_requests: usize,
+    pub error_count: usize,
+    pub warning_count: usize,
+    pub info_count: usize,
+    pub avg_response_time: f64,
+    pub endpoint_frequency: HashMap<String, usize>,
+    pub errors_by_endpoint: HashMap<String, usize>,
+    pub slowest_requests: Vec<LogEntry>, // top 10 slowest
 }
 
-impl ParseResult {
-    pub fn has_warnings(&self) -> bool {
-        !self.warnings.is_empty()
+impl LogStats {
+    pub fn new() -> Self {
+        Self {
+            total_requests: 0,
+            error_count: 0,
+            warning_count: 0,
+            info_count: 0,
+            avg_response_time: 0.0,
+            endpoint_frequency: HashMap::new(),
+            errors_by_endpoint: HashMap::new(),
+            slowest_requests: Vec::new(),
+        }
     }
 
-    pub fn warning_count(&self) -> usize {
-        self.warnings.len()
+    pub fn from_entries(entries: &[LogEntry]) -> Self {
+        let total_requests = entries.len();
+        let mut error_count: usize = 0;
+        let mut warning_count: usize = 0;
+        let mut info_count: usize = 0;
+        let mut avg_response_time = 0.0;
+        let mut sum_response_time = 0.0;
+        let mut requests = Vec::with_capacity(entries.len());
+        requests.resize(entries.len(), LogEntry::default());
+        println!("entries len = {}, reqs len = {}", entries.len(), requests.len());
+        requests.clone_from_slice(entries);
+        let mut endpoint_frequency = HashMap::new();
+        let mut errors_by_endpoint = HashMap::new();
+        for entry in entries {
+            if let Some(level) = &entry.level {
+                match level {
+                    LogLevel::Info =>info_count += 1,
+                    LogLevel::Warning => warning_count += 1,
+                    LogLevel::Error => {
+                        error_count += 1;
+                        if let Some(endpoint) = &entry.endpoint {
+                            errors_by_endpoint.entry(endpoint.clone()).and_modify(|count| *count += 1).or_insert(1);
+                        }
+                    }
+                }
+            }
+            if let Some(endpoint) = &entry.endpoint {
+                endpoint_frequency.entry(endpoint.clone()).and_modify(|count| *count += 1).or_insert(1);
+            }
+            if let Some(response_time) = entry.response_time {
+                sum_response_time += response_time;
+            }
+        }
+        avg_response_time = sum_response_time / total_requests as f64;
+        requests.sort_by(|a, b| b.response_time.partial_cmp(&a.response_time).unwrap_or(std::cmp::Ordering::Equal));
+        let slowest_requests = requests.to_vec();
+
+        Self {
+            total_requests,
+            info_count,
+            warning_count,
+            error_count,
+            avg_response_time,
+            endpoint_frequency,
+            errors_by_endpoint,
+            slowest_requests,
+        }
+
     }
 }
