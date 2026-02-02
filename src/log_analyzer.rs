@@ -1,7 +1,9 @@
 use anyhow::Context;
 use chrono::{NaiveDate, NaiveDateTime};
+use colored::*;
 use lazy_static::lazy_static;
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap, fmt::{self, Display, Formatter}, fs::File, io::{BufRead, BufReader}, net::IpAddr, path::PathBuf, str::FromStr
 };
@@ -46,7 +48,7 @@ pub enum AnalyzerError {
     EmptyLogFile,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum LogLevel {
     Info,
     Warning,
@@ -77,7 +79,7 @@ impl FromStr for LogLevel {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum LogMethod {
     Get,
     Post,
@@ -146,7 +148,7 @@ impl ParseResult {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LogEntry {
     pub timestamp: Option<String>,
     pub level: Option<LogLevel>,
@@ -306,7 +308,7 @@ impl Logs {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct LogStats {
     pub total_requests: usize,
     pub error_count: usize,
@@ -337,11 +339,9 @@ impl LogStats {
         let mut error_count: usize = 0;
         let mut warning_count: usize = 0;
         let mut info_count: usize = 0;
-        let mut avg_response_time = 0.0;
-        let mut sum_response_time = 0.0;
-        let mut requests = Vec::with_capacity(entries.len());
-        requests.resize(entries.len(), LogEntry::default());
-        println!("entries len = {}, reqs len = {}", entries.len(), requests.len());
+        let mut sum_response_time: f64 = 0.0;
+        let mut requests = Vec::with_capacity(total_requests);
+        requests.resize(total_requests, LogEntry::default());
         requests.clone_from_slice(entries);
         let mut endpoint_frequency = HashMap::new();
         let mut errors_by_endpoint = HashMap::new();
@@ -365,7 +365,7 @@ impl LogStats {
                 sum_response_time += response_time;
             }
         }
-        avg_response_time = sum_response_time / total_requests as f64;
+        let avg_response_time = sum_response_time / total_requests as f64;
         requests.sort_by(|a, b| b.response_time.partial_cmp(&a.response_time).unwrap_or(std::cmp::Ordering::Equal));
         let slowest_requests = requests.to_vec();
 
@@ -380,5 +380,233 @@ impl LogStats {
             slowest_requests,
         }
 
+    }
+
+    /// Print a comprehensive formatted report to stdout
+    pub fn print_report(&self) {
+        self.print_header();
+        self.print_summary();
+        self.print_performance();
+        self.print_top_endpoints();
+        self.print_error_analysis();
+        self.print_slowest_requests();
+        self.print_footer();
+    }
+
+    /// Export stats to JSON format
+    pub fn to_json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string_pretty(self)
+    }
+
+    fn print_header(&self) {
+        println!("\n{}", "╔═══════════════════════════════════════════════════════════════╗".bright_cyan());
+        println!("{}", "║          LOG ANALYSIS REPORT                                  ║".bright_cyan().bold());
+        println!("{}", "╚═══════════════════════════════════════════════════════════════╝".bright_cyan());
+    }
+
+    fn print_footer(&self) {
+        println!("{}", "═".repeat(65).bright_cyan());
+        println!();
+    }
+
+    fn print_summary(&self) {
+        println!("\n{}", "📊 SUMMARY STATISTICS".bold().bright_white());
+        println!("{}", "─".repeat(65).bright_black());
+        
+        println!("{:<30} {:>10}", "Total Requests:", format!("{}", self.total_requests).bright_white().bold());
+        
+        // Status breakdown with percentages and color coding
+        let info_pct = (self.info_count as f64 / self.total_requests as f64) * 100.0;
+        let warning_pct = (self.warning_count as f64 / self.total_requests as f64) * 100.0;
+        let error_pct = (self.error_count as f64 / self.total_requests as f64) * 100.0;
+        
+        println!("\n{}", "Status Breakdown:".bright_white());
+        println!("  {:<26} {:>8}  {:>6}", 
+            "INFO".green(), 
+            format!("{}", self.info_count).green(),
+            format!("({:.1}%)", info_pct).bright_black()
+        );
+        println!("  {:<26} {:>8}  {:>6}", 
+            "WARNING".yellow(), 
+            format!("{}", self.warning_count).yellow(),
+            format!("({:.1}%)", warning_pct).bright_black()
+        );
+        println!("  {:<26} {:>8}  {:>6}", 
+            "ERROR".red(), 
+            format!("{}", self.error_count).red().bold(),
+            format!("({:.1}%)", error_pct).bright_black()
+        );
+        
+        // Error rate indicator
+        if error_pct > 5.0 {
+            println!("\n  {} {}", "⚠".yellow(), format!("High error rate detected: {:.1}%", error_pct).yellow().bold());
+        } else if error_pct > 1.0 {
+            println!("\n  {} {}", "ℹ".bright_blue(), format!("Moderate error rate: {:.1}%", error_pct).bright_blue());
+        }
+    }
+
+    fn print_performance(&self) {
+        println!("\n{}", "⚡ PERFORMANCE METRICS".bold().bright_white());
+        println!("{}", "─".repeat(65).bright_black());
+        
+        println!("{:<30} {:>10}", 
+            "Average Response Time:", 
+            format!("{:.2}ms", self.avg_response_time).bright_cyan()
+        );
+        
+        // Calculate percentiles if we have response times
+        let mut response_times: Vec<f64> = self.slowest_requests
+            .iter()
+            .filter_map(|e| e.response_time)
+            .collect();
+        
+        if !response_times.is_empty() {
+            response_times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            
+            let p50_idx = (response_times.len() as f64 * 0.50) as usize;
+            let p95_idx = (response_times.len() as f64 * 0.95) as usize;
+            let p99_idx = (response_times.len() as f64 * 0.99) as usize;
+            
+            if p50_idx < response_times.len() {
+                println!("{:<30} {:>10}", 
+                    "P50 Response Time:", 
+                    format!("{:.2}ms", response_times[p50_idx]).bright_green()
+                );
+            }
+            if p95_idx < response_times.len() {
+                println!("{:<30} {:>10}", 
+                    "P95 Response Time:", 
+                    format!("{:.2}ms", response_times[p95_idx]).yellow()
+                );
+            }
+            if p99_idx < response_times.len() {
+                println!("{:<30} {:>10}", 
+                    "P99 Response Time:", 
+                    format!("{:.2}ms", response_times[p99_idx]).red()
+                );
+            }
+        }
+    }
+
+    fn print_top_endpoints(&self) {
+        println!("\n{}", "🔝 TOP 10 ENDPOINTS BY REQUEST COUNT".bold().bright_white());
+        println!("{}", "─".repeat(65).bright_black());
+        
+        let mut endpoints: Vec<_> = self.endpoint_frequency.iter().collect();
+        endpoints.sort_by(|a, b| b.1.cmp(a.1));
+        
+        println!("{:<4} {:<40} {:>10}", 
+            "#".bright_black(), 
+            "Endpoint".bright_black(), 
+            "Count".bright_black()
+        );
+        println!("{}", "─".repeat(65).bright_black());
+        
+        for (i, (endpoint, count)) in endpoints.into_iter().take(10).enumerate() {
+            let bar_width = (*count as f64 / self.total_requests as f64 * 30.0) as usize;
+            let bar = "█".repeat(bar_width);
+            
+            println!("{:<4} {:<40} {:>10} {}", 
+                format!("{}", i + 1).bright_cyan(),
+                Self::truncate_endpoint(endpoint, 40),
+                format!("{}", count).bright_white().bold(),
+                bar.bright_blue()
+            );
+        }
+    }
+
+    fn print_error_analysis(&self) {
+        if self.errors_by_endpoint.is_empty() {
+            println!("\n{}", "✅ ERROR ANALYSIS: No errors detected".bold().green());
+            return;
+        }
+        
+        println!("\n{}", "🚨 ERROR ANALYSIS".bold().bright_white());
+        println!("{}", "─".repeat(65).bright_black());
+        
+        let mut errors: Vec<_> = self.errors_by_endpoint.iter().collect();
+        errors.sort_by(|a, b| b.1.cmp(a.1));
+        
+        println!("{:<4} {:<40} {:>10}", 
+            "#".bright_black(), 
+            "Endpoint".bright_black(), 
+            "Errors".bright_black()
+        );
+        println!("{}", "─".repeat(65).bright_black());
+        
+        for (i, (endpoint, count)) in errors.iter().take(10).enumerate() {
+            println!("{:<4} {:<40} {:>10}", 
+                format!("{}", i + 1).bright_cyan(),
+                Self::truncate_endpoint(endpoint, 40),
+                format!("{}", count).red().bold()
+            );
+        }
+    }
+
+    fn print_slowest_requests(&self) {
+        println!("\n{}", "🐌 TOP 10 SLOWEST REQUESTS".bold().bright_white());
+        println!("{}", "─".repeat(65).bright_black());
+        
+        println!("{:<4} {:<35} {:<10} {:>10}", 
+            "#".bright_black(), 
+            "Endpoint".bright_black(),
+            "Method".bright_black(),
+            "Time".bright_black()
+        );
+        println!("{}", "─".repeat(65).bright_black());
+        
+        for (i, entry) in self.slowest_requests.iter().take(10).enumerate() {
+            if let Some(response_time) = entry.response_time {
+                let endpoint = entry.endpoint.as_deref().unwrap_or("N/A");
+                let method = entry.method.as_ref().map(|m| m.to_string()).unwrap_or_else(|| "N/A".to_string());
+                
+                let time_color = if response_time > 1000.0 {
+                    format!("{:.2}ms", response_time).red().bold()
+                } else if response_time > 500.0 {
+                    format!("{:.2}ms", response_time).yellow()
+                } else {
+                    format!("{:.2}ms", response_time).bright_white()
+                };
+                
+                println!("{:<4} {:<35} {:<10} {:>10}", 
+                    format!("{}", i + 1).bright_cyan(),
+                    Self::truncate_endpoint(endpoint, 35),
+                    method,
+                    time_color
+                );
+            }
+        }
+    }
+
+    fn truncate_endpoint(endpoint: &str, max_len: usize) -> String {
+        if endpoint.len() > max_len {
+            format!("{}...", &endpoint[..max_len - 3])
+        } else {
+            endpoint.to_string()
+        }
+    }
+}
+
+impl Display for LogStats {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        writeln!(f, "=== Log Analysis Report ===")?;
+        writeln!(f, "Total Requests: {}", self.total_requests)?;
+        writeln!(f, "\nStatus Breakdown:")?;
+        writeln!(f, "  INFO:    {} ({:.1}%)", 
+            self.info_count, 
+            (self.info_count as f64 / self.total_requests as f64) * 100.0
+        )?;
+        writeln!(f, "  WARNING: {} ({:.1}%)", 
+            self.warning_count, 
+            (self.warning_count as f64 / self.total_requests as f64) * 100.0
+        )?;
+        writeln!(f, "  ERROR:   {} ({:.1}%)", 
+            self.error_count, 
+            (self.error_count as f64 / self.total_requests as f64) * 100.0
+        )?;
+        writeln!(f, "\nPerformance:")?;
+        writeln!(f, "  Avg Response Time: {:.2}ms", self.avg_response_time)?;
+        
+        Ok(())
     }
 }
